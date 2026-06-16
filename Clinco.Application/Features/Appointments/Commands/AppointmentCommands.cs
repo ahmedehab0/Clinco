@@ -3,6 +3,7 @@ using Application.Common.Exceptions;
 using AutoMapper;
 using Domain.Entities;
 using Domain.Enums;
+using Domain.Events;
 using Domain.Interfaces;
 using Domain.Interfaces.Repositories;
 using FluentValidation;
@@ -48,19 +49,23 @@ public class BookAppointmentcmdHandler : IRequestHandler<BookAppointmentcmd, App
     private readonly IUserRepository _users;
     private readonly IUnitOfWork _uow;
     private readonly IMapper _mapper;
+    private readonly IPublisher _publisher;
+
 
     public BookAppointmentcmdHandler(
         IAppointmentRepository appointments,
         IUserRepository users,
         IUnitOfWork uow,
         IMapper mapper,
-        IServiceRepository serviceRepository)
+        IServiceRepository serviceRepository,
+        IPublisher publisher)
     {
         _appointments = appointments;
         _users = users;
         _uow = uow;
         _mapper = mapper;
         _serviceRepository = serviceRepository;
+        _publisher = publisher;
     }
 
     public async Task<AppointmentDto> Handle(BookAppointmentcmd cmd, CancellationToken ct)
@@ -103,7 +108,12 @@ public class BookAppointmentcmdHandler : IRequestHandler<BookAppointmentcmd, App
 
         await _appointments.CreateAsync(appointment);
         await _uow.SaveChangesAsync();
-
+        await _publisher.Publish(new SmsNotificationRequestedEvent(
+            appointment.Id,
+            appointment.PatientId,
+            appointment.Patient.PhoneNumber,
+            "Appoinment Booked",
+            $"Dear {appointment.Patient.FullName}, your appointment has been Booked for {appointment.AppointmentTime}"));
         // Reload with navigation props for mapping
         var created = await _appointments.GetByIdAsync(appointment.Id, ct);
         return _mapper.Map<AppointmentDto>(created!);
@@ -125,13 +135,17 @@ public class ManageAppointmentcmdHandler : IRequestHandler<ManageAppointmentcmd,
     private readonly IAppointmentRepository _appointments;
     private readonly IUnitOfWork _uow;
     private readonly IMapper _mapper;
+    private readonly IPublisher _publisher;
+
 
     public ManageAppointmentcmdHandler(
-        IAppointmentRepository appointments, IUnitOfWork uow, IMapper mapper)
+        IAppointmentRepository appointments, IUnitOfWork uow, IMapper mapper, IPublisher publisher)
     {
         _appointments = appointments;
         _uow = uow;
         _mapper = mapper;
+        _publisher = publisher;
+
     }
 
     public async Task<AppointmentDto> Handle(ManageAppointmentcmd cmd, CancellationToken ct)
@@ -143,12 +157,24 @@ public class ManageAppointmentcmdHandler : IRequestHandler<ManageAppointmentcmd,
         {
             case "confirm":
                 appointment.Confirm();
+                await _publisher.Publish(new SmsNotificationRequestedEvent(
+                    appointment.Id,
+                    appointment.PatientId,
+                    appointment.Patient.PhoneNumber,
+                    "Appoinment Confirmed",
+                    $"Dear {appointment.Patient.FullName}, your appointment has been confirmed for {appointment.AppointmentTime}"));
                 break;
 
             case "reschedule":
                 if (cmd.NewDate is null || cmd.NewTime is null)
                     throw new ConflictException("NewDate and NewTime are required for reschedule.");
                 appointment.Reschedule(DateOnly.Parse(cmd.NewDate), TimeOnly.Parse(cmd.NewTime));
+                await _publisher.Publish(new SmsNotificationRequestedEvent(
+                    appointment.Id,
+                    appointment.PatientId,
+                    appointment.Patient.PhoneNumber,
+                    "Appoinment Rescheduled",
+                    $"Dear {appointment.Patient.FullName}, your appointment has been rescheduled for {appointment.AppointmentTime}"));
                 break;
 
             case "complete":
@@ -175,13 +201,15 @@ public class CancelAppointmentcmdHandler : IRequestHandler<CancelAppointmentcmd>
     private readonly IAppointmentRepository _appointments;
     private readonly IUserRepository _users;
     private readonly IUnitOfWork _uow;
+    private readonly IPublisher _publisher;
 
     public CancelAppointmentcmdHandler(
-        IAppointmentRepository appointments, IUserRepository users, IUnitOfWork uow)
+        IAppointmentRepository appointments, IUserRepository users, IUnitOfWork uow, IPublisher publisher)
     {
         _appointments = appointments;
         _users = users;
         _uow = uow;
+        _publisher = publisher;
     }
 
     public async Task Handle(CancelAppointmentcmd cmd, CancellationToken ct)
@@ -201,6 +229,12 @@ public class CancelAppointmentcmdHandler : IRequestHandler<CancelAppointmentcmd>
 
         await _appointments.UpdateAsync(appointment, ct);
         await _uow.SaveChangesAsync(ct);
+        await _publisher.Publish(new SmsNotificationRequestedEvent(
+            appointment.Id,
+            appointment.PatientId,
+            appointment.Patient.PhoneNumber,
+            "Appoinment Cancelled",
+            $"Dear {appointment.Patient.FullName}, your appointment has been cancelled."));
     }
     private static string BuildMessage(string patientName, string delayMessage)
     => $"Dear {patientName}, your appointment has been scheduled for {delayMessage}";

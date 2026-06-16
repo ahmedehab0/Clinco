@@ -50,24 +50,9 @@ public class SendSmsNotificationCommandHandler : IRequestHandler<SendSmsNotifica
         await _notifications.CreateAsync(notification, ct);
         await _uow.SaveChangesAsync(ct);
 
-        // 2. Call Twilio (or whichever provider ISmsService resolves to)
-        var result = await _smsService.SendAsync(cmd.PhoneNumber, cmd.MessageContent, ct);
+        await _smsService.SendAsync(cmd.PhoneNumber, cmd.MessageContent, ct);
 
         // 3. Update status based on provider response
-        if (result.IsSuccess)
-        {
-            notification.MarkSent(result.ProviderMessageId!);
-            _logger.LogInformation(
-                "SMS sent to {Phone} for appointment {AppointmentId}. SID: {Sid}",
-                cmd.PhoneNumber, cmd.AppointmentId, result.ProviderMessageId);
-        }
-        else
-        {
-            notification.MarkFailed(result.ErrorMessage ?? "Unknown error");
-            _logger.LogWarning(
-                "SMS failed for appointment {AppointmentId} to {Phone}. Error: {Error}",
-                cmd.AppointmentId, cmd.PhoneNumber, result.ErrorMessage);
-        }
 
         await _notifications.UpdateAsync(notification, ct);
         await _uow.SaveChangesAsync(ct);

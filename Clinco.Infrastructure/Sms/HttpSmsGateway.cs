@@ -1,8 +1,10 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using Clinco.Application.Services;
+using Domain.Entities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using Vonage;
 
 namespace Clinco.Infrastructure.Sms;
 
@@ -13,7 +15,7 @@ internal sealed class HttpSmsGateway(
 {
     private readonly SmsOptions _options = options.Value;
 
-    public async Task<SmsSendResult> SendAsync(string phoneNumber, string messageContent, CancellationToken cancellationToken)
+    public async Task SendAsync(string phoneNumber, string messageContent, CancellationToken cancellationToken)
     {
         if (!_options.Enabled)
         {
@@ -21,48 +23,33 @@ internal sealed class HttpSmsGateway(
                 "SMS provider disabled. Simulated send to {PhoneNumber})",
                 phoneNumber);
 
-            return new SmsSendResult(true, $"mock-{Guid.NewGuid():N}", null);
-        }
-
-        if (string.IsNullOrWhiteSpace(_options.BaseUrl))
-        {
-            return new SmsSendResult(false, null, "SMS BaseUrl is not configured.");
+            return;
         }
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, _options.BaseUrl.TrimEnd('/') + "/send")
-            {
-                Content = JsonContent.Create(new
-                {
-                    to = phoneNumber,
-                    message = messageContent,
-                    from = _options.SenderName
-                })
-            };
+            var credentials = Vonage.Request.Credentials.FromApiKeyAndSecret(
+                _options.ApiKey,
+                _options.ApiSecret
+            );
+            var client = new VonageClient(credentials);
 
-            if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+            var response = await client.SmsClient.SendAnSmsAsync(new Vonage.Messaging.SendSmsRequest
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+                To = phoneNumber,
+                From = "+201270079243",
+                Text = messageContent
+            });
+
+            if (response.Messages.Any(m => m.Status != "0"))
+            {
+                logger.LogError($"Failed to send SMS: {response.Messages.FirstOrDefault()?.ErrorText}");
             }
-
-            var response = await httpClient.SendAsync(request);
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                return new SmsSendResult(false, null, $"HTTP {(int)response.StatusCode}: {error}");
-            }
-
-            var providerMessageId = response.Headers.TryGetValues("x-message-id", out var values)
-                ? values.FirstOrDefault()
-                : null;
-
-            return new SmsSendResult(true, providerMessageId ?? $"provider-{Guid.NewGuid():N}", null);
+            logger.LogInformation($"SMS sent successfully to {phoneNumber} from {_options.SenderName}. Message: {messageContent}");
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to send SMS to {PhoneNumber}", phoneNumber);
-            return new SmsSendResult(false, null, ex.Message);
+            logger.LogError(ex, "An error occurred while sending SMS notification.");
         }
     }
 }
